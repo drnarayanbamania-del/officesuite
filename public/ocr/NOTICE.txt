@@ -1,0 +1,9 @@
+Bundled OCR assets for Office Suite
+=================================
+- Tesseract.js (worker) - Apache License 2.0 - https://github.com/naptha/tesseract.js
+- tesseract.js-core (WASM) - Apache License 2.0 - https://github.com/naptha/tesseract.js-core
+- tessdata_fast eng.traineddata, hin.traineddata - Apache License 2.0 -
+  https://github.com/tesseract-ocr/tessdata_fast
+- Noto Sans and Noto Sans Devanagari - SIL Open Font License 1.1 -
+  https://fonts.google.com/noto
+See the adjacent license files for full texts.
