@@ -3,8 +3,10 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  Crop,
   Download,
   Highlighter,
+  Hash,
   Image as ImageIcon,
   Loader2,
   MessageSquare,
@@ -44,7 +46,18 @@ interface Annotation {
   image?: string;
 }
 
-const COLORS = ['#facc15', '#4ade80', '#f472b6', '#60a5fa'];
+const COLORS = [
+  '#facc15',
+  '#4ade80',
+  '#f472b6',
+  '#60a5fa',
+  '#111827',
+  '#ffffff',
+  '#ef4444',
+  '#f97316',
+  '#a855f7',
+  '#14b8a6',
+];
 
 async function imageFileToDataUrl(file: File): Promise<{ dataUrl: string; aspect: number }> {
   const url = URL.createObjectURL(file);
@@ -115,6 +128,21 @@ export default function PdfViewer() {
   const [textSize, setTextSize] = useState(16);
   const [pendingImage, setPendingImage] = useState<{ dataUrl: string; aspect: number; name: string } | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [cropOpen, setCropOpen] = useState(false);
+  const [cropMargins, setCropMargins] = useState<Record<'top' | 'right' | 'bottom' | 'left', number>>({
+    top: 10,
+    right: 10,
+    bottom: 10,
+    left: 10,
+  });
+  const [cropScope, setCropScope] = useState<'all' | 'current'>('all');
+  const [numberOpen, setNumberOpen] = useState(false);
+  const [numberFormat, setNumberFormat] = useState('{n}');
+  const [numberPlacement, setNumberPlacement] = useState('bottom-center');
+  const [numberStart, setNumberStart] = useState(1);
+  const [numberSize, setNumberSize] = useState(11);
+  const [numberScope, setNumberScope] = useState<'all' | 'current'>('all');
+  const [pageToolBusy, setPageToolBusy] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -434,6 +462,75 @@ export default function PdfViewer() {
     }
   };
 
+  const cropPages = async () => {
+    if (!file) return;
+    setPageToolBusy(true);
+    try {
+      const pdf = await PDFDocument.load(file.bytes.slice(0), { ignoreEncryption: true });
+      const targets = cropScope === 'current' ? [pdf.getPage(page - 1)] : pdf.getPages();
+      const pointsPerMm = 72 / 25.4;
+      for (const target of targets) {
+        const box = target.getCropBox();
+        const left = cropMargins.left * pointsPerMm;
+        const right = cropMargins.right * pointsPerMm;
+        const top = cropMargins.top * pointsPerMm;
+        const bottom = cropMargins.bottom * pointsPerMm;
+        const width = box.width - left - right;
+        const height = box.height - top - bottom;
+        if (width < 36 || height < 36) {
+          throw new Error('Those margins leave too little page area.');
+        }
+        target.setCropBox(box.x + left, box.y + bottom, width, height);
+      }
+      const bytes = new Uint8Array(await pdf.save());
+      const copy = new Uint8Array(bytes.byteLength);
+      copy.set(bytes);
+      downloadBytes(copy.buffer, `${stripExt(file.name)}-cropped.pdf`, 'application/pdf');
+      setCropOpen(false);
+      toast('Cropped PDF downloaded');
+    } catch (err: any) {
+      toast(err?.message ?? 'Could not crop this PDF', 'error');
+    } finally {
+      setPageToolBusy(false);
+    }
+  };
+
+  const numberPages = async () => {
+    if (!file) return;
+    setPageToolBusy(true);
+    try {
+      const pdf = await PDFDocument.load(file.bytes.slice(0), { ignoreEncryption: true });
+      const font = await pdf.embedFont(StandardFonts.Helvetica);
+      const total = pdf.getPageCount();
+      const targets = numberScope === 'current' ? [pdf.getPage(page - 1)] : pdf.getPages();
+      const start = Math.max(0, Math.min(9999, Math.round(numberStart) || 0));
+      const margin = 22;
+      for (const [index, target] of targets.entries()) {
+        const label = numberFormat.replace('{n}', String(start + index)).replace('{total}', String(total));
+        const box = target.getCropBox();
+        const textWidth = font.widthOfTextAtSize(label, numberSize);
+        const left = box.x + margin;
+        const right = box.x + box.width - textWidth - margin;
+        const center = box.x + (box.width - textWidth) / 2;
+        const bottom = box.y + margin;
+        const top = box.y + box.height - numberSize - margin;
+        const x = numberPlacement.endsWith('left') ? left : numberPlacement.endsWith('right') ? right : center;
+        const y = numberPlacement.startsWith('top') ? top : bottom;
+        target.drawText(label, { x, y, size: numberSize, font, color: rgb(0.08, 0.1, 0.15) });
+      }
+      const bytes = new Uint8Array(await pdf.save());
+      const copy = new Uint8Array(bytes.byteLength);
+      copy.set(bytes);
+      downloadBytes(copy.buffer, `${stripExt(file.name)}-numbered.pdf`, 'application/pdf');
+      setNumberOpen(false);
+      toast('Numbered PDF downloaded');
+    } catch (err: any) {
+      toast(err?.message ?? 'Could not number this PDF', 'error');
+    } finally {
+      setPageToolBusy(false);
+    }
+  };
+
   const upload = async (list: FileList | null) => {
     const selected = list?.[0];
     if (!selected) return;
@@ -515,6 +612,22 @@ export default function PdfViewer() {
         >
           <ScanText className="h-3.5 w-3.5" /> OCR
         </Link>
+        <button
+          className="btn-outline px-2.5 py-1.5 text-xs"
+          onClick={() => setCropOpen(true)}
+          disabled={!file || !numPages || pageToolBusy}
+          title="Crop page margins"
+        >
+          <Crop className="h-3.5 w-3.5" /> Crop
+        </button>
+        <button
+          className="btn-outline px-2.5 py-1.5 text-xs"
+          onClick={() => setNumberOpen(true)}
+          disabled={!file || !numPages || pageToolBusy}
+          title="Add page numbers"
+        >
+          <Hash className="h-3.5 w-3.5" /> Number
+        </button>
         <button className="btn-outline px-2.5 py-1.5 text-xs" onClick={exportAnnotated} disabled={exporting || !annotations.length}>
           {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
           Export annotated PDF
@@ -622,7 +735,10 @@ export default function PdfViewer() {
               <button
                 key={swatch}
                 onClick={() => setColor(swatch)}
-                className={clsx('h-4 w-4 rounded-full border', color === swatch ? 'border-ink' : 'border-transparent')}
+                className={clsx(
+                  'h-4 w-4 rounded-full border shadow-sm transition',
+                  color === swatch ? 'border-ink ring-2 ring-brand-500/30' : 'border-line hover:border-line-strong'
+                )}
                 style={{ background: swatch }}
                 aria-label={`Use ${swatch}`}
               />
@@ -859,6 +975,158 @@ export default function PdfViewer() {
           </select>
           <span className="text-[10.5px] text-ink-muted">Current color is used</span>
         </div>
+      </Modal>
+
+      <Modal
+        open={cropOpen}
+        onClose={() => setCropOpen(false)}
+        title="Crop pages"
+        description="Trim margins and download a cropped copy. Your original file stays unchanged."
+        footer={
+          <>
+            <button className="btn-ghost" onClick={() => setCropOpen(false)}>
+              Cancel
+            </button>
+            <button className="btn-primary" onClick={cropPages} disabled={pageToolBusy}>
+              {pageToolBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Crop className="h-4 w-4" />}
+              Download cropped copy
+            </button>
+          </>
+        }
+      >
+        <div className="grid grid-cols-2 gap-3">
+          {(['top', 'right', 'bottom', 'left'] as const).map((side) => (
+            <div key={side}>
+              <label className="label" htmlFor={`crop-${side}`}>
+                {side[0].toUpperCase() + side.slice(1)} (mm)
+              </label>
+              <input
+                id={`crop-${side}`}
+                className="field"
+                type="number"
+                min={0}
+                max={100}
+                value={cropMargins[side]}
+                onChange={(event) =>
+                  setCropMargins((previous) => ({
+                    ...previous,
+                    [side]: Math.max(0, Math.min(100, Number(event.target.value) || 0)),
+                  }))
+                }
+              />
+            </div>
+          ))}
+        </div>
+        <div className="mt-3">
+          <label className="label" htmlFor="crop-scope">
+            Apply to
+          </label>
+          <select
+            id="crop-scope"
+            className="field"
+            value={cropScope}
+            onChange={(event) => setCropScope(event.target.value as 'all' | 'current')}
+          >
+            <option value="all">All pages ({numPages})</option>
+            <option value="current">Current page ({page})</option>
+          </select>
+        </div>
+        <p className="mt-3 text-[11px] leading-relaxed text-ink-muted">
+          Margins are measured from the existing page edge. Annotations stay in the workspace and are not included in this copy.
+        </p>
+      </Modal>
+
+      <Modal
+        open={numberOpen}
+        onClose={() => setNumberOpen(false)}
+        title="Number pages"
+        description="Add page numbers and download a numbered copy. Your original file stays unchanged."
+        footer={
+          <>
+            <button className="btn-ghost" onClick={() => setNumberOpen(false)}>
+              Cancel
+            </button>
+            <button className="btn-primary" onClick={numberPages} disabled={pageToolBusy}>
+              {pageToolBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Hash className="h-4 w-4" />}
+              Download numbered copy
+            </button>
+          </>
+        }
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="label" htmlFor="number-format">
+              Format
+            </label>
+            <select id="number-format" className="field" value={numberFormat} onChange={(event) => setNumberFormat(event.target.value)}>
+              <option value="{n}">1, 2, 3</option>
+              <option value="Page {n}">Page 1</option>
+              <option value="{n} / {total}">1 / 10</option>
+              <option value="Page {n} of {total}">Page 1 of 10</option>
+            </select>
+          </div>
+          <div>
+            <label className="label" htmlFor="number-placement">
+              Position
+            </label>
+            <select
+              id="number-placement"
+              className="field"
+              value={numberPlacement}
+              onChange={(event) => setNumberPlacement(event.target.value)}
+            >
+              <option value="bottom-center">Bottom centre</option>
+              <option value="bottom-left">Bottom left</option>
+              <option value="bottom-right">Bottom right</option>
+              <option value="top-center">Top centre</option>
+              <option value="top-left">Top left</option>
+              <option value="top-right">Top right</option>
+            </select>
+          </div>
+          <div>
+            <label className="label" htmlFor="number-start">
+              Start at
+            </label>
+            <input
+              id="number-start"
+              className="field"
+              type="number"
+              min={0}
+              max={9999}
+              value={numberStart}
+              onChange={(event) => setNumberStart(Math.max(0, Math.min(9999, Number(event.target.value) || 0)))}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="number-size">
+              Size
+            </label>
+            <select id="number-size" className="field" value={numberSize} onChange={(event) => setNumberSize(Number(event.target.value))}>
+              {[9, 11, 13, 15].map((size) => (
+                <option key={size} value={size}>
+                  {size} pt
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="sm:col-span-2">
+            <label className="label" htmlFor="number-scope">
+              Apply to
+            </label>
+            <select
+              id="number-scope"
+              className="field"
+              value={numberScope}
+              onChange={(event) => setNumberScope(event.target.value as 'all' | 'current')}
+            >
+              <option value="all">All pages ({numPages})</option>
+              <option value="current">Current page ({page})</option>
+            </select>
+          </div>
+        </div>
+        <p className="mt-3 text-[11px] leading-relaxed text-ink-muted">
+          Numbers use Helvetica. Annotations stay in the workspace and are not included in this copy.
+        </p>
       </Modal>
     </div>
   );
