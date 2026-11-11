@@ -12,6 +12,7 @@ import {
   Highlighter,
   History,
   Image,
+  Type,
   Images,
   Info,
   Languages,
@@ -134,7 +135,7 @@ export interface ToolDef {
   minFiles?: number;
   options?: ToolOption[];
   launch?: 'pdf-viewer' | 'versions' | 'organizer' | 'ocr';
-  viewerMode?: 'view' | 'highlight' | 'comment' | 'stamp';
+  viewerMode?: 'view' | 'highlight' | 'comment' | 'stamp' | 'text' | 'image';
   ai?: boolean;
   outputNote?: string;
 }
@@ -556,6 +557,26 @@ export const TOOLS: ToolDef[] = [
     accept: '.pdf',
     launch: 'pdf-viewer',
     viewerMode: 'stamp',
+  },
+  {
+    id: 'add-text',
+    name: 'Add text',
+    description: 'Type text directly onto a PDF page, then export a flattened copy.',
+    category: 'annotate',
+    icon: Type,
+    accept: '.pdf',
+    launch: 'pdf-viewer',
+    viewerMode: 'text',
+  },
+  {
+    id: 'add-image',
+    name: 'Add image',
+    description: 'Place a logo, photo or scan on a PDF page.',
+    category: 'annotate',
+    icon: Image,
+    accept: '.pdf',
+    launch: 'pdf-viewer',
+    viewerMode: 'image',
   },
   {
     id: 'pdf-signature',

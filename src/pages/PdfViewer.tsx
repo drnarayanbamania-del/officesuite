@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Download,
   Highlighter,
+  Image as ImageIcon,
   Loader2,
   MessageSquare,
   Minus,
@@ -13,6 +14,7 @@ import {
   ScanText,
   Stamp,
   Trash2,
+  Type,
   Upload,
   ZoomIn,
 } from 'lucide-react';
@@ -26,21 +28,46 @@ import { useFiles } from '../store/files';
 import { openPdf, type PDFDoc } from '../tools/pdf-utils';
 import { Badge, EmptyState, Modal, Spinner } from '../components/ui';
 
-type Mode = 'view' | 'highlight' | 'comment' | 'stamp';
+type Mode = 'view' | 'highlight' | 'comment' | 'stamp' | 'text' | 'image';
 
 interface Annotation {
   id: string;
   page: number;
-  type: 'highlight' | 'comment' | 'stamp';
+  type: 'highlight' | 'comment' | 'stamp' | 'text' | 'image';
   x: number;
   y: number;
   w: number;
   h: number;
   text: string;
   color: string;
+  fontSize?: number;
+  image?: string;
 }
 
 const COLORS = ['#facc15', '#4ade80', '#f472b6', '#60a5fa'];
+
+async function imageFileToDataUrl(file: File): Promise<{ dataUrl: string; aspect: number }> {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error('This image could not be decoded.'));
+      element.src = url;
+    });
+    const maxDimension = 1800;
+    const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Canvas is not available in this browser.');
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return { dataUrl: canvas.toDataURL('image/png'), aspect: canvas.width / canvas.height };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 function hexToRgb(hex: string) {
   const clean = hex.replace('#', '');
@@ -70,7 +97,9 @@ export default function PdfViewer() {
   const [zoom, setZoom] = useState(1.15);
   const [mode, setMode] = useState<Mode>(() => {
     const requested = params.get('mode');
-    return requested === 'highlight' || requested === 'comment' || requested === 'stamp' ? requested : 'view';
+    return requested === 'highlight' || requested === 'comment' || requested === 'stamp' || requested === 'text' || requested === 'image'
+      ? requested
+      : 'view';
   });
   const [stampLabel, setStampLabel] = useState('APPROVED');
   const [color, setColor] = useState(COLORS[0]);
@@ -81,6 +110,10 @@ export default function PdfViewer() {
   const [drag, setDrag] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [commentDraft, setCommentDraft] = useState<{ x: number; y: number } | null>(null);
   const [commentText, setCommentText] = useState('');
+  const [textDraft, setTextDraft] = useState<{ x: number; y: number } | null>(null);
+  const [textValue, setTextValue] = useState('');
+  const [textSize, setTextSize] = useState(16);
+  const [pendingImage, setPendingImage] = useState<{ dataUrl: string; aspect: number; name: string } | null>(null);
   const [exporting, setExporting] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -89,6 +122,7 @@ export default function PdfViewer() {
   const renderTaskRef = useRef<{ cancel: () => void } | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     refresh();
@@ -252,7 +286,72 @@ export default function PdfViewer() {
       setCommentText('');
     } else if (mode === 'stamp') {
       addAnnotation({ page, type: 'stamp', x: point.x, y: point.y, w: 0.24, h: 0.075, text: stampLabel, color });
+    } else if (mode === 'text') {
+      setTextDraft(point);
+      setTextValue('');
+    } else if (mode === 'image') {
+      if (!pendingImage) {
+        imageInputRef.current?.click();
+        return;
+      }
+      const rect = event.currentTarget.getBoundingClientRect();
+      const w = 0.32;
+      const h = Math.min(0.7, Math.max(0.08, (w * rect.width) / rect.height / pendingImage.aspect));
+      addAnnotation({
+        page,
+        type: 'image',
+        x: Math.max(0, Math.min(1 - w, point.x - w / 2)),
+        y: Math.max(0, Math.min(1 - h, point.y - h / 2)),
+        w,
+        h,
+        text: pendingImage.name,
+        color,
+        image: pendingImage.dataUrl,
+      });
+      setPendingImage(null);
     }
+  };
+
+  const chooseImage = async (list: FileList | null) => {
+    const selected = list?.[0];
+    if (!selected) return;
+    if (selected.size > 10 * 1024 * 1024) {
+      if (imageInputRef.current) imageInputRef.current.value = '';
+      toast('Choose an image smaller than 10 MB', 'info');
+      return;
+    }
+    try {
+      const picked = await imageFileToDataUrl(selected);
+      setPendingImage({ ...picked, name: selected.name });
+      setMode('image');
+      toast('Image ready — click the page to place it', 'info');
+    } catch (err: any) {
+      toast(err?.message ?? 'Could not read that image', 'error');
+    } finally {
+      if (imageInputRef.current) imageInputRef.current.value = '';
+    }
+  };
+
+  const addTextAnnotation = () => {
+    if (!textDraft) return;
+    const text = textValue.trim();
+    if (!text) {
+      toast('Type some text first', 'info');
+      return;
+    }
+    addAnnotation({
+      page,
+      type: 'text',
+      x: Math.min(0.55, Math.max(0, textDraft.x)),
+      y: Math.min(0.92, Math.max(0, textDraft.y)),
+      w: 0.45,
+      h: 0.08,
+      text,
+      color,
+      fontSize: textSize,
+    });
+    setTextDraft(null);
+    setTextValue('');
   };
 
   const exportAnnotated = async () => {
@@ -282,6 +381,26 @@ export default function PdfViewer() {
             font: bold,
             color: shade,
           });
+        } else if (annotation.type === 'text') {
+          const size = Math.min(72, Math.max(7, annotation.fontSize ?? 16));
+          const text = latinOnly(annotation.text).trim();
+          if (!text) continue;
+          target.drawText(text, {
+            x,
+            y: Math.max(4, height - annotation.y * height - size),
+            size,
+            font,
+            color: shade,
+            maxWidth: Math.max(24, w),
+            lineHeight: size * 1.2,
+          });
+        } else if (annotation.type === 'image') {
+          if (!annotation.image) continue;
+          const encoded = annotation.image.split(',')[1];
+          if (!encoded) continue;
+          const imageBytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+          const embedded = await pdf.embedPng(imageBytes);
+          target.drawImage(embedded, { x, y, width: w, height: h });
         } else {
           target.drawRectangle({
             x,
@@ -453,11 +572,16 @@ export default function PdfViewer() {
               { id: 'highlight' as Mode, label: 'Highlight', icon: Highlighter },
               { id: 'comment' as Mode, label: 'Comment', icon: MessageSquare },
               { id: 'stamp' as Mode, label: 'Stamp', icon: Stamp },
+              { id: 'text' as Mode, label: 'Text', icon: Type },
+              { id: 'image' as Mode, label: 'Image', icon: ImageIcon },
             ] as const
           ).map((item) => (
             <button
               key={item.id}
-              onClick={() => setMode(item.id)}
+              onClick={() => {
+                setMode(item.id);
+                if (item.id === 'image' && !pendingImage) imageInputRef.current?.click();
+              }}
               className={clsx(
                 'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition',
                 mode === item.id ? 'bg-raised text-ink shadow-card' : 'text-ink-soft hover:text-ink'
@@ -473,6 +597,21 @@ export default function PdfViewer() {
           <select className="field ml-1 w-auto py-1 text-[11px]" value={stampLabel} onChange={(event) => setStampLabel(event.target.value)}>
             {['APPROVED', 'REVIEWED', 'DRAFT', 'CONFIDENTIAL', 'PAID'].map((label) => (
               <option key={label}>{label}</option>
+            ))}
+          </select>
+        ) : null}
+
+        {mode === 'text' ? (
+          <select
+            className="field ml-1 w-auto py-1 text-[11px]"
+            value={textSize}
+            onChange={(event) => setTextSize(Number(event.target.value))}
+            aria-label="Text size"
+          >
+            {[12, 16, 20, 28, 36].map((size) => (
+              <option key={size} value={size}>
+                {size} pt
+              </option>
             ))}
           </select>
         ) : null}
@@ -493,7 +632,17 @@ export default function PdfViewer() {
 
         {mode !== 'view' ? (
           <span className="ml-auto text-[10.5px] text-ink-muted">
-            {mode === 'highlight' ? 'Drag across a passage' : mode === 'comment' ? 'Click to drop a note' : 'Click to place the stamp'}
+            {mode === 'highlight'
+              ? 'Drag across a passage'
+              : mode === 'comment'
+                ? 'Click to drop a note'
+                : mode === 'stamp'
+                  ? 'Click to place the stamp'
+                  : mode === 'text'
+                    ? 'Click the page, then type your text'
+                    : pendingImage
+                      ? 'Click the page to place the image'
+                      : 'Choose an image, then click the page'}
           </span>
         ) : null}
       </div>
@@ -518,7 +667,9 @@ export default function PdfViewer() {
                 'relative select-none bg-white shadow-lift',
                 mode === 'highlight' && 'cursor-crosshair',
                 mode === 'comment' && 'cursor-copy',
-                mode === 'stamp' && 'cursor-cell'
+                mode === 'stamp' && 'cursor-cell',
+                mode === 'text' && 'cursor-text',
+                mode === 'image' && 'cursor-copy'
               )}
               onMouseDown={onMouseDown}
               onMouseMove={onMouseMove}
@@ -547,6 +698,25 @@ export default function PdfViewer() {
                     >
                       {annotation.text}
                     </div>
+                  ) : annotation.type === 'text' ? (
+                    <div
+                      className="whitespace-pre-wrap font-medium leading-tight"
+                      style={{
+                        color: annotation.color,
+                        fontSize: `${Math.max(8, (annotation.fontSize ?? 16) * 1.35 * zoom)}px`,
+                      }}
+                    >
+                      {annotation.text}
+                    </div>
+                  ) : annotation.type === 'image' ? (
+                    annotation.image ? (
+                      <img
+                        src={annotation.image}
+                        alt={annotation.text || 'Placed image'}
+                        className="h-full w-full object-contain"
+                        draggable={false}
+                      />
+                    ) : null
                   ) : (
                     <div className="max-w-[230px] rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[10.5px] leading-snug text-amber-950 shadow-sm">
                       <span className="font-semibold">Note:</span> {annotation.text}
@@ -602,6 +772,13 @@ export default function PdfViewer() {
       ) : null}
 
       <input ref={uploadRef} type="file" accept=".pdf" className="hidden" onChange={(event) => upload(event.target.files)} />
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        onChange={(event) => chooseImage(event.target.files)}
+      />
 
       <Modal
         open={Boolean(commentDraft)}
@@ -639,6 +816,49 @@ export default function PdfViewer() {
           autoFocus
           onChange={(event) => setCommentText(event.target.value)}
         />
+      </Modal>
+
+      <Modal
+        open={Boolean(textDraft)}
+        onClose={() => setTextDraft(null)}
+        title="Add text"
+        description="Type text to place on this page. It stays editable in your library and is flattened on export."
+        footer={
+          <>
+            <button className="btn-ghost" onClick={() => setTextDraft(null)}>
+              Cancel
+            </button>
+            <button className="btn-primary" onClick={addTextAnnotation}>
+              Add text
+            </button>
+          </>
+        }
+      >
+        <label className="label" htmlFor="pdf-add-text">Text</label>
+        <textarea
+          id="pdf-add-text"
+          className="field min-h-[100px]"
+          placeholder="Type the text to place on the page"
+          value={textValue}
+          autoFocus
+          onChange={(event) => setTextValue(event.target.value)}
+        />
+        <div className="mt-3 flex items-center gap-2">
+          <label className="label mb-0" htmlFor="pdf-text-size">Size</label>
+          <select
+            id="pdf-text-size"
+            className="field w-auto py-1.5 text-xs"
+            value={textSize}
+            onChange={(event) => setTextSize(Number(event.target.value))}
+          >
+            {[12, 16, 20, 28, 36].map((size) => (
+              <option key={size} value={size}>
+                {size} pt
+              </option>
+            ))}
+          </select>
+          <span className="text-[10.5px] text-ink-muted">Current color is used</span>
+        </div>
       </Modal>
     </div>
   );
